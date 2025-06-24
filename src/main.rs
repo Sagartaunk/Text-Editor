@@ -1,10 +1,10 @@
 use crossterm::{
     cursor::{Hide , MoveTo , Show},
-    event::{read , Event , KeyCode , KeyEvent},
+    event::{read , Event , KeyCode , KeyEvent , KeyModifiers},
     execute, 
     terminal::{disable_raw_mode , enable_raw_mode , Clear , ClearType , EnterAlternateScreen , LeaveAlternateScreen}
 };
-use std::{fs::File, io::{self , BufRead , BufReader , Stdout , Write}, os::unix::fs::lchown, process::exit};
+use std::{fs::File, io::{self , BufRead , BufReader , Stdout , Write} ,  process::exit};
 
 enum EditorMode {
     Normal , 
@@ -23,7 +23,17 @@ fn read_file_to_buffer(filename: &str) -> io::Result<Vec<String>> {
     Ok(reader.lines().filter_map(Result::ok).collect())
 }
 
-fn draw(stdout: &mut Stdout, buffer: &[String], cursor_x: usize, cursor_y: usize , mode :  &EditorMode ) -> std::io::Result<()> {
+fn write_buffer(filename:&str , buffer :&[String] ) -> std::io::Result<()>{
+    let mut file = File::create(filename)?;
+    for line in buffer {
+        writeln!(file , "{}" , line)?;
+
+    }
+    Ok(())
+}
+
+
+fn draw(stdout: &mut Stdout, buffer: &[String], cursor_x: usize, cursor_y: usize , mode :  &EditorMode  , status_message : Option<&str>) -> std::io::Result<()> {
 
     execute!(stdout , Clear(ClearType::All))?;
     for (i , line)  in buffer.iter().enumerate() {
@@ -40,84 +50,104 @@ fn draw(stdout: &mut Stdout, buffer: &[String], cursor_x: usize, cursor_y: usize
     }
     let safe_y = cursor_y.min(buffer.len().saturating_sub(1));
     let safe_x = cursor_x.min(buffer.get(safe_y).map_or(0 , |l| l.len()));
+    if let Some(m) = status_message {
+        execute!(stdout , MoveTo(0 , buffer.len() as u16 + 2))?;
+        writeln!(stdout , "{}" , m)?;
+    }
+
     execute!(stdout , MoveTo(safe_x as u16  , safe_y as u16))?;
     stdout.flush()?;
     Ok(())
     
 }
-
 fn main() -> std::io::Result<()> {
     let mut mode = EditorMode::Normal;
     let mut fname = String::new();
+    let mut status_message = None;
+
     io::stdin().read_line(&mut fname).expect("Failed to read line name");
     let fname = fname.trim();
-    let mut buffer = read_file_to_buffer(fname).unwrap_or_else(|e| {
-        println!("Error Reading File Please Verify it Exists");
+
+    let mut buffer = read_file_to_buffer(fname).unwrap_or_else(|_| {
+        println!("Error Reading File. Please verify it exists.");
         exit(1);
     });
+
+    if buffer.is_empty() {
+        buffer.push(String::new());
+    }
+
     let (mut cursor_x, mut cursor_y) = (0, 0);
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout , EnterAlternateScreen , Hide)?;
+    execute!(stdout, EnterAlternateScreen, Hide)?;
 
- loop {
-    draw(&mut stdout, &buffer, cursor_x, cursor_y , &mode)?;
+    loop {
+        draw(&mut stdout, &buffer, cursor_x, cursor_y, &mode, status_message.as_deref())?;
 
-    if let Event::Key(KeyEvent { code, .. }) = read()? {
-        match mode {
-            EditorMode::Normal => match code {
-                KeyCode::Char('q') => break,
-                KeyCode::Char('i') => mode = EditorMode::Insert,
-                KeyCode::Up => {
-                    if cursor_y > 0 {
-                        cursor_y -= 1;
-                        cursor_x = cursor_x.min(buffer[cursor_y].len());
-                    }
-                }
-                KeyCode::Down => {
-                    if cursor_y + 1 < buffer.len() {
-                        cursor_y += 1;
-                        cursor_x = cursor_x.min(buffer[cursor_y].len());
-                    }
-                }
-                KeyCode::Left => {
-                    if cursor_x > 0 {
-                        cursor_x -= 1;
-                    }
-                }
-                KeyCode::Right => {
-                    if cursor_x < buffer.get(cursor_y).map_or(0, |l| l.len()) {
-                        cursor_x += 1;
-                    }
-                }
-                _ => {}
-            },
-
-            EditorMode::Insert => match code {
-                KeyCode::Esc => mode = EditorMode::Normal,
-                KeyCode::Char(c) => {
-                    if let Some(line) = buffer.get_mut(cursor_y) {
-                        if cursor_x <= line.len() {
-                            line.insert(cursor_x, c);
-                            cursor_x += 1;
+        if let Event::Key(KeyEvent { code, modifiers, .. }) = read()? {
+            match mode {
+                EditorMode::Normal => match (code, modifiers) {
+                    (KeyCode::Char('q'), _) => break,
+                    (KeyCode::Char('i'), _) => mode = EditorMode::Insert,
+                    (KeyCode::Up, _) => {
+                        if cursor_y > 0 {
+                            cursor_y -= 1;
+                            cursor_x = cursor_x.min(buffer[cursor_y].len());
                         }
                     }
-                }
-                KeyCode::Backspace => {
-                    if let Some(line) = buffer.get_mut(cursor_y) {
-                        if cursor_x > 0 && cursor_x <= line.len() {
-                            line.remove(cursor_x - 1);
+                    (KeyCode::Down, _) => {
+                        if cursor_y + 1 < buffer.len() {
+                            cursor_y += 1;
+                            cursor_x = cursor_x.min(buffer[cursor_y].len());
+                        }
+                    }
+                    (KeyCode::Left, _) => {
+                        if cursor_x > 0 {
                             cursor_x -= 1;
                         }
                     }
-                }
-                _ => {}
+                    (KeyCode::Right, _) => {
+                        if cursor_x < buffer.get(cursor_y).map_or(0, |l| l.len()) {
+                            cursor_x += 1;
+                        }
+                    }
+                    _ => {}
+                },
+
+                EditorMode::Insert => match (code, modifiers) {
+                    (KeyCode::Char('s'), m) if m.contains(KeyModifiers::CONTROL) => {
+                        if let Err(_) = write_buffer(fname, &buffer) {
+                            status_message = Some("Error saving file".to_string());
+                        } else {
+                            status_message = Some("File Saved".to_string());
+                        }
+                    }
+                    (KeyCode::Esc, _) => mode = EditorMode::Normal,
+                    (KeyCode::Char(c), _) => {
+                        if let Some(line) = buffer.get_mut(cursor_y) {
+                            if cursor_x <= line.len() {
+                                line.insert(cursor_x, c);
+                                cursor_x += 1;
+                            }
+                        }
+                    }
+                    (KeyCode::Backspace, _) => {
+                        if let Some(line) = buffer.get_mut(cursor_y) {
+                            if cursor_x > 0 && cursor_x <= line.len() {
+                                line.remove(cursor_x - 1);
+                                cursor_x -= 1;
+                            }
+                        }
+                    }
+
+                    _ => {}
+                },
             }
         }
     }
-}
 
     disable_raw_mode()?;
-    execute!(stdout ,  Show , LeaveAlternateScreen)?;
+    execute!(stdout, Show, LeaveAlternateScreen)?;
     Ok(())
 }
