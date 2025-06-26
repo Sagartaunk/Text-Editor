@@ -60,6 +60,7 @@ fn draw(stdout: &mut Stdout, buffer: &[String], cursor_x: usize, cursor_y: usize
     Ok(())
     
 }
+
 fn main() -> std::io::Result<()> {
     let mut mode = EditorMode::Normal;
     let mut fname = String::new();
@@ -138,6 +139,14 @@ fn main() -> std::io::Result<()> {
                                 line.remove(cursor_x - 1);
                                 cursor_x -= 1;
                             }
+                        }
+                    }
+                    (KeyCode::Enter , _ ) => {
+                        if let Some(line) = buffer.get_mut(cursor_y) {
+                            let new = line.split_off(cursor_x);
+                            buffer.insert(cursor_y +1 , new);
+                            cursor_y += 1;
+                            cursor_x = 0;
                         }
                     }
 
